@@ -26,15 +26,22 @@ app.use((req, res, next) => {
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Connect to Database
-mongoose.connect(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 5000,
-  retryWrites: true,
-})
-  .then(() => console.log('MongoDB Connected...'))
-  .catch(err => {
-    console.error('CRITICAL: MongoDB Connection Failed. App will stay alive for testing but DB features will fail.');
-    console.error(err.message);
-  });
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+      retryWrites: true,
+    });
+    console.log('✅ MongoDB Connected Successfully');
+  } catch (err) {
+    console.error('❌ CRITICAL: MongoDB Connection Failed');
+    console.error(`Error: ${err.message}`);
+    console.log('Retrying connection in 5 seconds...');
+    setTimeout(connectDB, 5000);
+  }
+};
+
+connectDB();
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
