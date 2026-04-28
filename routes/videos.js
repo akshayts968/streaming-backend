@@ -201,7 +201,7 @@ router.put('/:id/hero', protect, authorize('admin'), async (req, res) => {
 // @route   POST /api/videos/link-drive
 router.post('/link-drive', protect, authorize('admin'), async (req, res) => {
   try {
-    const { title, description, category, drive_file_id, thumbnailUrl, duration } = req.body;
+    const { title, description, category, drive_file_id, thumbnailUrl, duration, useIframe } = req.body;
 
     if (!title || !category || !drive_file_id) {
       return res.status(400).json({ success: false, message: 'Please provide title, category, and drive_file_id' });
@@ -215,6 +215,7 @@ router.post('/link-drive', protect, authorize('admin'), async (req, res) => {
       drive_file_id,
       thumbnailUrl: thumbnailUrl || 'no-thumbnail.jpg',
       duration: duration || '00:00',
+      useIframe: useIframe || false,
       creator: req.user.id
     });
 
