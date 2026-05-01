@@ -80,4 +80,58 @@ router.post('/watchlist', protect, async (req, res) => {
   }
 });
 
+// @desc    Get current watch time consumed
+// @route   GET /api/user/watch-time
+router.get('/watch-time', protect, async (req, res) => {
+  try {
+    if (req.user.role === 'admin') {
+      return res.status(200).json({ success: true, consumed: 0, isAdmin: true });
+    }
+    res.status(200).json({ success: true, consumed: req.user.watchTimeConsumed || 0, isAdmin: false });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Track watch time for paywall
+// @route   POST /api/user/track-time
+router.post('/track-time', protect, async (req, res) => {
+  try {
+    const { secondsWatched } = req.body;
+    
+    if (req.user.role === 'admin') {
+      return res.status(200).json({ success: true, allowed: true, message: 'Admin bypass' });
+    }
+
+    if (!secondsWatched || isNaN(secondsWatched)) {
+      return res.status(400).json({ success: false, message: 'Invalid secondsWatched' });
+    }
+
+    req.user.watchTimeConsumed += Number(secondsWatched);
+    await req.user.save();
+
+    const LIMIT_SECONDS = 300; // 5 minutes
+
+    if (req.user.watchTimeConsumed >= LIMIT_SECONDS) {
+      return res.status(403).json({ success: true, allowed: false, consumed: req.user.watchTimeConsumed });
+    }
+
+    res.status(200).json({ success: true, allowed: true, consumed: req.user.watchTimeConsumed });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Mock payment to reset watch time
+// @route   POST /api/user/reset-time
+router.post('/reset-time', protect, async (req, res) => {
+  try {
+    req.user.watchTimeConsumed = 0;
+    await req.user.save();
+    res.status(200).json({ success: true, message: 'Time reset successfully. Thank you for your purchase!' });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

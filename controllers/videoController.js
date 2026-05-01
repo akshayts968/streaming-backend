@@ -1,6 +1,7 @@
 const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
+const { getCache, setCache } = require('../utils/redis');
 
 // Initialize Drive API with OAuth2
 const oauth2Client = new google.auth.OAuth2(
@@ -22,13 +23,19 @@ const streamVideo = async (req, res) => {
     if (!range) return res.status(400).json({ error: "Requires Range header" });
 
     try {
-        const fileMetadata = await drive.files.get({ fileId: fileId, fields: 'size', supportsAllDrives: true });
-        const videoSize = Number(fileMetadata.data.size);
+        const cacheKey = `video_size_${fileId}`;
+        let videoSize = await getCache(cacheKey);
+        
+        if (!videoSize) {
+            const fileMetadata = await drive.files.get({ fileId: fileId, fields: 'size', supportsAllDrives: true });
+            videoSize = Number(fileMetadata.data.size);
+            await setCache(cacheKey, videoSize, 86400); // Cache for 24 hours
+        }
 
-        const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB chunks for smoother streaming
+        const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks for a balance between start speed and stability
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
-        const end = Math.min(start + CHUNK_SIZE, videoSize - 1);
+        const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + CHUNK_SIZE, videoSize - 1);
         const contentLength = end - start + 1;
 
         const headers = {
@@ -295,4 +302,32 @@ const uploadChunkToDrive = async (req, res) => {
     }
 };
 
-module.exports = { streamVideo, uploadVideoToDrive, uploadVideoToCloudinary, uploadChunkToDrive };
+const getDriveFiles = async (req, res) => {
+    try {
+        const folderId = req.query.folderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+        
+        const response = await drive.files.list({
+            q: `'${folderId}' in parents and trashed=false and (mimeType contains 'video/' or mimeType = 'application/vnd.google-apps.folder')`,
+            fields: 'files(id, name, mimeType, size, videoMediaMetadata, description)',
+            spaces: 'drive',
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true
+        });
+        
+        // Log a sample file's metadata for debugging duration issues
+        const firstVideo = response.data.files.find(f => f.mimeType.startsWith('video/'));
+        if (firstVideo) {
+            console.log(`Sample Video Metadata (${firstVideo.name}):`, JSON.stringify(firstVideo.videoMediaMetadata, null, 2));
+        }
+
+        res.status(200).json({
+            success: true,
+            data: response.data.files
+        });
+    } catch (error) {
+        console.error('Error fetching drive files:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch drive files' });
+    }
+};
+
+module.exports = { streamVideo, uploadVideoToDrive, uploadVideoToCloudinary, uploadChunkToDrive, getDriveFiles };

@@ -51,9 +51,29 @@ connectDB();
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/videos', require('./routes/videos'));
 app.use('/api/user', require('./routes/user'));
+app.use('/api/series', require('./routes/series'));
 
 app.get('/', (req, res) => {
   res.send('Antigravity Stream API is running...');
+});
+
+// Temp: One-time admin promotion route
+app.get('/make-admin-now', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const user = await User.findOneAndUpdate(
+      { email: 'akshaysuresh968@gmail.com' },
+      { role: 'admin' },
+      { new: true }
+    );
+    if (user) {
+      res.json({ success: true, message: `${user.email} is now ${user.role}. Please log out and log back in.` });
+    } else {
+      res.json({ success: false, message: 'User not found. Make sure you have registered with akshaysuresh968@gmail.com' });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
