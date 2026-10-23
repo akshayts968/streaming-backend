@@ -3,7 +3,7 @@ const User = require('./models/User');
 const Series = require('./models/Series');
 const Video = require('./models/Video');
 
-const MONGODB_URI = 'mongodb+srv://akshaysuresh968_db_user:bv9XuxQfsxo4D57p@cluster0.iqotult.mongodb.net/?retryWrites=true&w=majority';
+const MONGODB_URI = '';
 
 async function seed() {
   await mongoose.connect(MONGODB_URI);
