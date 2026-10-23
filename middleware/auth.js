@@ -44,3 +44,16 @@ exports.authorize = (...roles) => {
     next();
   };
 };
+
+// Grant access ONLY to akshaysuresh968@gmail.com
+exports.authorizeAdminEmail = () => {
+  return (req, res, next) => {
+    if (!req.user || req.user.role !== 'admin' || req.user.email !== 'akshaysuresh968@gmail.com') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: Only akshaysuresh968@gmail.com is authorized to perform this operation.'
+      });
+    }
+    next();
+  };
+};

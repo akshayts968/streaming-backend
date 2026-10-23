@@ -1,14 +1,20 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { upload, chunkUpload } = require('../utils/upload');
-const { protect, authorize } = require('../middleware/auth');
-const { streamVideo, uploadVideoToDrive, uploadVideoToCloudinary, uploadChunkToDrive, getDriveFiles } = require('../controllers/videoController');
+const { protect, authorize, authorizeAdminEmail } = require('../middleware/auth');
+const { getActiveTelegramUpload } = require('../utils/telegram');
+const { streamVideo, uploadVideoToDrive, uploadVideoToCloudinary, uploadChunkToDrive, getDriveFiles, streamTelegramVideo, uploadVideoToTelegramController, getTelegramChannelVideos, linkTelegramVideo, streamTelegramThumbnail } = require('../controllers/videoController');
 const { uploadImage } = require('../utils/cloudinary');
 const Video = require('../models/Video');
 const Series = require('../models/Series');
 const { getCache, setCache, redis, clearCachePattern } = require('../utils/redis');
 const router = express.Router();
 const fs = require('fs');
+
+const uploadFields = upload.fields([
+  { name: 'video', maxCount: 1 },
+  { name: 'thumbnail', maxCount: 1 }
+]);
 
 // @desc    Get files from Google Drive folder
 // @route   GET /api/videos/drive-files
@@ -48,17 +54,85 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// @desc    Stream video from Google Drive
+// @desc    Stream video from Google Drive or Telegram
+// @route   GET /api/videos/stream/:fileId
 router.get('/stream/:fileId', streamVideo);
 
-// Configuration for multiple fields
-const uploadFields = upload.fields([
-  { name: 'video', maxCount: 1 },
-  { name: 'thumbnail', maxCount: 1 }
-]);
+// @desc    Stream video directly from Telegram
+// @route   GET /api/videos/stream-tg/:messageId
+router.get('/stream-tg/:messageId', streamTelegramVideo);
+
+// @desc    Get live status of Telegram uploads
+// @route   GET /api/videos/telegram-upload-status
+router.get('/telegram-upload-status', protect, authorizeAdminEmail(), (req, res) => {
+  res.json({ success: true, data: getActiveTelegramUpload() });
+});
+
+// @desc    Publish a pending Telegram video directly from Admin Dashboard
+// @route   POST /api/videos/publish-telegram-pending
+router.post('/publish-telegram-pending', protect, authorizeAdminEmail(), async (req, res) => {
+  try {
+    const {
+      messageId,
+      title,
+      category,
+      description,
+      type,
+      seriesId,
+      seriesTitle,
+      seasonNumber,
+      episodeNumber,
+      thumbnailUrl
+    } = req.body;
+
+    if (!messageId) {
+      return res.status(400).json({ success: false, message: 'messageId is required' });
+    }
+    const { publishPendingTelegramVideo } = require('../utils/telegram');
+    const result = await publishPendingTelegramVideo({
+      messageId,
+      title,
+      category,
+      description,
+      type,
+      seriesId,
+      seriesTitle,
+      seasonNumber,
+      episodeNumber,
+      thumbnailUrl
+    });
+    res.status(200).json({ success: true, data: result.video || result });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Get files from Telegram channel
+// @route   GET /api/videos/telegram-files
+router.get('/telegram-files', protect, authorize('admin'), getTelegramChannelVideos);
+
+// @desc    Upload a video to Telegram Channel
+// @route   POST /api/videos/upload-telegram
+router.post('/upload-telegram', protect, authorizeAdminEmail(), uploadFields, async (req, res) => {
+  if (req.files && req.files.video) {
+    req.file = req.files.video[0];
+  }
+  if (req.files && req.files.thumbnail) {
+    req.thumbnailFile = req.files.thumbnail[0];
+  }
+  await uploadVideoToTelegramController(req, res);
+});
+
+// @desc    Stream thumbnail from Telegram
+// @route   GET /api/videos/thumbnail-tg/:messageId
+router.get('/thumbnail-tg/:messageId', streamTelegramThumbnail);
+
+// @desc    Link an existing Telegram video
+// @route   POST /api/videos/link-telegram
+router.post('/link-telegram', protect, authorizeAdminEmail(), upload.single('thumbnail'), linkTelegramVideo);
 
 // @desc    Upload a video to Google Drive (Single Request - Legacy)
-router.post('/upload-drive', protect, authorize('viewer', 'creator', 'admin'), uploadFields, async (req, res) => {
+router.post('/upload-drive', protect, authorizeAdminEmail(), uploadFields, async (req, res) => {
   try {
     if (!req.files || !req.files.video) {
       return res.status(400).json({ success: false, message: 'Please upload a video file' });
@@ -87,7 +161,7 @@ const chunkFields = chunkUpload.fields([
 ]);
 
 // @desc    Upload a video chunk
-router.post('/upload-chunk', protect, authorize('viewer', 'creator', 'admin'), chunkFields, async (req, res) => {
+router.post('/upload-chunk', protect, authorizeAdminEmail(), chunkFields, async (req, res) => {
   try {
     if (!req.files || !req.files.chunk) {
       return res.status(400).json({ success: false, message: 'Missing chunk data' });
@@ -111,7 +185,7 @@ router.post('/upload-chunk', protect, authorize('viewer', 'creator', 'admin'), c
 });
 
 // @desc    Upload a video to Cloudinary
-router.post('/upload-cloudinary', protect, authorize('viewer', 'creator', 'admin'), uploadFields, async (req, res) => {
+router.post('/upload-cloudinary', protect, authorizeAdminEmail(), uploadFields, async (req, res) => {
   try {
     if (!req.files || !req.files.video) {
       return res.status(400).json({ success: false, message: 'Please upload a video file' });
@@ -133,7 +207,7 @@ router.post('/upload-cloudinary', protect, authorize('viewer', 'creator', 'admin
 });
 
 // @desc    Upload a video (S3/Local)
-router.post('/upload', protect, authorize('viewer', 'creator', 'admin'), uploadFields, async (req, res) => {
+router.post('/upload', protect, authorizeAdminEmail(), uploadFields, async (req, res) => {
   try {
     if (!req.files || !req.files.video) {
       return res.status(400).json({ success: false, message: 'Please upload a video file' });
@@ -306,7 +380,7 @@ router.put('/:id/hero', protect, authorize('admin'), async (req, res) => {
 
 // @desc    Link an existing Google Drive video
 // @route   POST /api/videos/link-drive
-router.post('/link-drive', protect, authorize('admin'), upload.single('thumbnail'), async (req, res) => {
+router.post('/link-drive', protect, authorizeAdminEmail(), upload.single('thumbnail'), async (req, res) => {
   try {
     const { title, description, category, drive_file_id, duration, useIframe, type, seriesId, episodeNumber, seasonNumber } = req.body;
     const categories = Array.isArray(category) ? category : (category ? category.split(',').map(c => c.trim()) : []);

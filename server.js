@@ -1,3 +1,8 @@
+const dns = require('dns');
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {}
+
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
@@ -37,6 +42,8 @@ const connectDB = async () => {
       retryWrites: true,
     });
     console.log('✅ MongoDB Connected Successfully');
+    const { initTelegramListener } = require('./utils/telegram');
+    initTelegramListener().catch(err => console.error('Telegram listener startup failed:', err.message));
   } catch (err) {
     console.error('❌ CRITICAL: MongoDB Connection Failed');
     console.error(`Error: ${err.message}`);

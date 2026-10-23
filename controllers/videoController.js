@@ -18,6 +18,11 @@ const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
 const streamVideo = async (req, res) => {
     const fileId = req.params.fileId;
+    if (/^\d+$/.test(fileId) || (typeof fileId === 'string' && fileId.startsWith('tg_'))) {
+        const messageId = fileId.replace(/^tg_/, '');
+        req.params.messageId = messageId;
+        return streamTelegramVideo(req, res);
+    }
     const range = req.headers.range;
 
     if (!range) return res.status(400).json({ error: "Requires Range header" });
@@ -330,4 +335,195 @@ const getDriveFiles = async (req, res) => {
     }
 };
 
-module.exports = { streamVideo, uploadVideoToDrive, uploadVideoToCloudinary, uploadChunkToDrive, getDriveFiles };
+const {
+    uploadVideoToTelegram,
+    streamVideoFromTelegram,
+    listChannelVideos,
+    uploadThumbnailToTelegram,
+    streamThumbnailFromTelegram
+} = require('../utils/telegram');
+
+const streamTelegramThumbnail = async (req, res) => {
+    try {
+        await streamThumbnailFromTelegram(req.params.messageId, res);
+    } catch (err) {
+        console.error('Thumbnail Stream Error:', err.message);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+};
+
+const streamTelegramVideo = async (req, res) => {
+    try {
+        await streamVideoFromTelegram(req.params.messageId, req.headers.range, res);
+    } catch (err) {
+        console.error('Telegram Stream Error:', err.message);
+        if (!res.headersSent) res.status(500).json({ error: "Telegram Stream Failed: " + err.message });
+    }
+};
+
+const uploadVideoToTelegramController = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'Please upload a video file' });
+        }
+
+        const { title, description, category, tags, type, seriesId, seasonNumber, episodeNumber } = req.body;
+        console.log("[Telegram] Starting upload for: " + req.file.originalname);
+
+        const result = await uploadVideoToTelegram(req.file.path, {
+            title,
+            description,
+            onProgress: (p) => {
+                const percent = Math.min(Math.round(p * 100), 100);
+                process.stdout.write("\r[Telegram Upload Progress] " + percent + "%");
+            }
+        });
+        console.log("\n[Telegram] Upload Successful. Message ID: " + result.messageId);
+
+        if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+
+        let finalThumbnailUrl = req.body.thumbnailUrl || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
+
+        const thumbFile = (req.files && req.files.thumbnail) ? req.files.thumbnail[0] : (req.thumbnailFile || null);
+        if (thumbFile && fs.existsSync(thumbFile.path)) {
+            console.log("[Telegram] Uploading thumbnail to Telegram for: " + title);
+            const thumbResult = await uploadThumbnailToTelegram(thumbFile.path, title);
+            const host = req.get('host') || 'localhost:5001';
+            const protocol = req.protocol || 'http';
+            finalThumbnailUrl = `${protocol}://${host}/api/videos/thumbnail-tg/${thumbResult.messageId}`;
+            if (fs.existsSync(thumbFile.path)) {
+                fs.unlinkSync(thumbFile.path);
+            }
+        }
+
+        const isEpisode = type === 'Episode' || Boolean(seriesId);
+        const Video = require('../models/Video');
+        const Series = require('../models/Series');
+
+        let resolvedSeriesTitle = null;
+        if (isEpisode && seriesId) {
+            try {
+                const s = await Series.findById(seriesId);
+                if (s) {
+                    resolvedSeriesTitle = s.title;
+                    if (episodeNumber && parseInt(episodeNumber, 10) > (s.totalEpisodes || 0)) {
+                        await Series.findByIdAndUpdate(seriesId, { totalEpisodes: parseInt(episodeNumber, 10) });
+                    }
+                }
+            } catch (e) {}
+        }
+
+        const video = await Video.create({
+            title,
+            description,
+            category: Array.isArray(category) ? category : (category ? [category] : ['General']),
+            tags: tags ? (Array.isArray(tags) ? tags : tags.split(',')) : [],
+            videoUrl: "/api/videos/stream-tg/" + result.messageId,
+            telegram_message_id: result.messageId,
+            telegram_file_id: result.fileId,
+            storageProvider: 'telegram',
+            creator: req.user.id,
+            thumbnailUrl: finalThumbnailUrl,
+            type: isEpisode ? 'Episode' : 'Movie',
+            seriesId: isEpisode ? (seriesId || null) : null,
+            seasonNumber: isEpisode ? (parseInt(seasonNumber, 10) || 1) : 1,
+            episodeNumber: isEpisode ? (parseInt(episodeNumber, 10) || 1) : null
+        });
+
+        try {
+            const { clearCachePattern } = require('../utils/redis');
+            await clearCachePattern('videos_list_*');
+            if (seriesId) {
+                await clearCachePattern('series_list_*');
+                await clearCachePattern(`series_${seriesId}*`);
+            }
+        } catch (e) {}
+
+        try {
+            const { recordTelegramActivity } = require('../utils/telegram');
+            recordTelegramActivity({
+                id: String(result.messageId),
+                title: video.title,
+                rawFileName: req.file.originalname,
+                sizeMB: (req.file.size / (1024 * 1024)).toFixed(1),
+                source: 'Browser Upload to Telegram',
+                status: 'Published',
+                category: video.category,
+                videoId: video._id.toString(),
+                type: video.type,
+                seriesId: video.seriesId ? video.seriesId.toString() : null,
+                seriesTitle: resolvedSeriesTitle,
+                seasonNumber: video.seasonNumber,
+                episodeNumber: video.episodeNumber,
+                date: new Date().toISOString()
+            });
+        } catch (e) {}
+
+        res.status(201).json({
+            success: true,
+            data: video
+        });
+    } catch (error) {
+        console.error('Telegram Upload Error:', error);
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        res.status(500).json({ success: false, error: "Telegram Upload Failed: " + error.message });
+    }
+};
+
+const getTelegramChannelVideos = async (req, res) => {
+    try {
+        const videos = await listChannelVideos(50);
+        res.status(200).json({ success: true, count: videos.length, data: videos });
+    } catch (err) {
+        console.error('Telegram List Error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+const linkTelegramVideo = async (req, res) => {
+    try {
+        const { title, description, category, messageId, fileId, thumbnailUrl, type, seriesId, episodeNumber, seasonNumber } = req.body;
+        if (!title || !category || !messageId) {
+            return res.status(400).json({ success: false, message: 'Please provide title, category, and messageId' });
+        }
+
+        const Video = require('../models/Video');
+        const video = await Video.create({
+            title,
+            description,
+            category: Array.isArray(category) ? category : [category],
+            videoUrl: "/api/videos/stream-tg/" + messageId,
+            telegram_message_id: messageId,
+            telegram_file_id: fileId,
+            storageProvider: 'telegram',
+            thumbnailUrl: thumbnailUrl || 'no-thumbnail.jpg',
+            type: type || 'Movie',
+            seriesId: seriesId || null,
+            episodeNumber: episodeNumber || null,
+            seasonNumber: seasonNumber || 1,
+            creator: req.user.id
+        });
+
+        res.status(201).json({ success: true, data: video });
+    } catch (err) {
+        console.error('Link Telegram Error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+module.exports = {
+    streamVideo,
+    uploadVideoToDrive,
+    uploadVideoToCloudinary,
+    uploadChunkToDrive,
+    getDriveFiles,
+    streamTelegramVideo,
+    uploadVideoToTelegramController,
+    getTelegramChannelVideos,
+    linkTelegramVideo,
+    streamTelegramThumbnail
+};

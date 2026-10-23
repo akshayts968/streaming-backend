@@ -31,7 +31,7 @@ const videoSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Please add a title'],
     trim: true,
-    maxlength: [100, 'Title cannot be more than 100 characters'],
+    maxlength: [300, 'Title cannot be more than 300 characters'],
   },
   slug: {
     type: String,
@@ -40,7 +40,7 @@ const videoSchema = new mongoose.Schema({
   description: {
     type: String,
     default: '',
-    maxlength: [1000, 'Description cannot be more than 1000 characters'],
+    maxlength: [3000, 'Description cannot be more than 3000 characters'],
   },
   thumbnailUrl: {
     type: String,
@@ -52,6 +52,17 @@ const videoSchema = new mongoose.Schema({
   },
   drive_file_id: {
     type: String,
+  },
+  telegram_message_id: {
+    type: Number,
+  },
+  telegram_file_id: {
+    type: String,
+  },
+  storageProvider: {
+    type: String,
+    enum: ['drive', 'telegram', 'local', 'cloudinary'],
+    default: 'telegram',
   },
   creator: {
     type: mongoose.Schema.ObjectId,
@@ -68,7 +79,7 @@ const videoSchema = new mongoose.Schema({
   category: [{
     type: String,
     required: [true, 'Please add a category'],
-    enum: ['Action', 'Drama', 'Thriller', 'Comedy', 'Documentary', 'Regional', 'Other'],
+    enum: ['Action', 'Drama', 'Thriller', 'Comedy', 'Sci-Fi', 'Adventure', 'Horror', 'Romance', 'Animation', 'Documentary', 'Regional', 'Fantasy', 'Mystery', 'Crime', 'Other'],
   }],
   tags: [String],
   isPublished: {
