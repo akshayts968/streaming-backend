@@ -3,3 +3,7 @@ node_modules/
 service-account.json
 service-account.json.json
 uploads/
+
+tmp/
+*.log
+

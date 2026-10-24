@@ -498,6 +498,81 @@ const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) 
 };
 
 /**
+ * On-the-fly remux: Telegram bytes → FFmpeg stream copy → fragmented MP4 → Chrome.
+ * No video/audio re-encode. Playback can start as soon as the first fMP4 fragment is muxed.
+ */
+const streamRemuxFromTelegram = async (messageId, res, req = null, startSeconds = 0) => {
+  const { pipeFfmpegToResponse, writeToFfmpegStdin } = require('./remuxStream');
+
+  const client = await getTelegramClient();
+  const chatId = getTargetChatId();
+  const msgs = await client.getMessages(chatId, { ids: [parseInt(messageId, 10)] });
+  const msg = msgs && msgs[0];
+
+  if (!msg || !msg.media) {
+    return res.status(404).json({ error: 'Video media not found on Telegram for this message ID' });
+  }
+
+  let aborted = false;
+  let ffmpegStdin = null;
+
+  const markAborted = () => {
+    aborted = true;
+    if (ffmpegStdin && !ffmpegStdin.destroyed) {
+      try { ffmpegStdin.destroy(); } catch (_) { /* ignore */ }
+    }
+  };
+
+  if (req) {
+    req.on('close', markAborted);
+    req.on('aborted', markAborted);
+  }
+  res.on('close', markAborted);
+
+  pipeFfmpegToResponse({
+    input: 'pipe:0',
+    startSeconds,
+    res,
+    req,
+    onStdinReady: (stdin) => {
+      ffmpegStdin = stdin;
+      stdin.on('error', (err) => {
+        if (err && err.code !== 'EPIPE' && err.code !== 'ERR_STREAM_DESTROYED') {
+          console.error('[Remux] FFmpeg stdin error:', err.message);
+        }
+      });
+    },
+  });
+
+  try {
+    for await (const chunk of client.iterDownload({
+      file: msg.media,
+      offset: bigInt(0),
+      requestSize: 512 * 1024,
+      workers: 4,
+    })) {
+      if (aborted) break;
+      const wrote = await writeToFfmpegStdin(ffmpegStdin, chunk, () => aborted);
+      if (!wrote) break;
+    }
+
+    if (ffmpegStdin && !ffmpegStdin.destroyed) {
+      ffmpegStdin.end();
+    }
+  } catch (err) {
+    if (!aborted) {
+      console.error('[Remux] Telegram download error:', err.message);
+    }
+    if (ffmpegStdin && !ffmpegStdin.destroyed) {
+      try { ffmpegStdin.end(); } catch (_) { /* ignore */ }
+    }
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Failed to remux Telegram video' });
+    }
+  }
+};
+
+/**
  * Upload thumbnail image to Telegram
  */
 const uploadThumbnailToTelegram = async (thumbFilePath, title = '') => {
@@ -1583,6 +1658,7 @@ module.exports = {
   getTargetChatId,
   uploadVideoToTelegram,
   streamVideoFromTelegram,
+  streamRemuxFromTelegram,
   listChannelVideos,
   initTelegramListener,
   publishVideoToDb,

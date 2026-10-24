@@ -338,10 +338,13 @@ const getDriveFiles = async (req, res) => {
 const {
     uploadVideoToTelegram,
     streamVideoFromTelegram,
+    streamRemuxFromTelegram,
     listChannelVideos,
     uploadThumbnailToTelegram,
     streamThumbnailFromTelegram
 } = require('../utils/telegram');
+const { remuxFileToResponse, resolveLocalVideoPath } = require('../utils/remuxStream');
+const mongoose = require('mongoose');
 
 const streamTelegramThumbnail = async (req, res) => {
     try {
@@ -358,6 +361,64 @@ const streamTelegramVideo = async (req, res) => {
     } catch (err) {
         console.error('Telegram Stream Error:', err.message);
         if (!res.headersSent) res.status(500).json({ error: "Telegram Stream Failed: " + err.message });
+    }
+};
+
+const parseStartSeconds = (value) => {
+    const t = parseFloat(value);
+    return Number.isFinite(t) && t > 0 ? t : 0;
+};
+
+const findVideoForLiveStream = async (id) => {
+    const Video = require('../models/Video');
+    const raw = String(id || '').replace(/^tg_/, '');
+    const or = [{ slug: raw }, { drive_file_id: raw }, { telegram_file_id: raw }];
+    if (/^\d+$/.test(raw)) {
+        or.push({ telegram_message_id: parseInt(raw, 10) });
+    }
+    if (mongoose.Types.ObjectId.isValid(raw) && String(new mongoose.Types.ObjectId(raw)) === raw) {
+        or.push({ _id: raw });
+    }
+    return Video.findOne({ $or: or });
+};
+
+/**
+ * Fast-start remux: container-only MKV/MP4 → fragmented MP4 for Chrome <video>.
+ * Source is a local disk file when present, otherwise Telegram.
+ */
+const streamLiveRemux = async (req, res) => {
+    try {
+        const id = String(req.params.id || req.params.messageId || '').replace(/^tg_/, '');
+        const startSeconds = parseStartSeconds(req.query.t);
+
+        let video = null;
+        try {
+            video = await findVideoForLiveStream(id);
+        } catch (_) {
+            video = null;
+        }
+
+        if (video && video.storageProvider === 'local') {
+            const localPath = resolveLocalVideoPath(video.videoUrl);
+            if (localPath) {
+                return remuxFileToResponse(localPath, res, req, startSeconds);
+            }
+        }
+
+        const messageId = video?.telegram_message_id
+            ? String(video.telegram_message_id)
+            : id;
+
+        if (!/^\d+$/.test(String(messageId))) {
+            return res.status(404).json({ error: 'No Telegram or disk source found for remux' });
+        }
+
+        await streamRemuxFromTelegram(messageId, res, req, startSeconds);
+    } catch (err) {
+        console.error('Live remux error:', err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Live remux failed: ' + err.message });
+        }
     }
 };
 
@@ -522,6 +583,7 @@ module.exports = {
     uploadChunkToDrive,
     getDriveFiles,
     streamTelegramVideo,
+    streamLiveRemux,
     uploadVideoToTelegramController,
     getTelegramChannelVideos,
     linkTelegramVideo,
