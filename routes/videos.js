@@ -13,9 +13,9 @@ const { getCache, setCache, redis, clearCachePattern, checkRateLimit } = require
 // IP Rate Limiting middleware for Telegram Video Streaming (60 range requests / min)
 const streamRateLimiter = async (req, res, next) => {
   const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
-  const { allowed, remaining } = await checkRateLimit(clientIp, 60, 60);
+  const { allowed, remaining } = await checkRateLimit(clientIp, 180, 60);
 
-  res.setHeader('X-RateLimit-Limit', '60');
+  res.setHeader('X-RateLimit-Limit', '180');
   res.setHeader('X-RateLimit-Remaining', String(Math.max(0, remaining)));
 
   if (!allowed) {
