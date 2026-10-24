@@ -59,9 +59,11 @@ const getTelegramClient = async () => {
     isConnecting = true;
     const session = new StringSession(sessionStr);
     clientInstance = new TelegramClient(session, apiId, apiHash, {
-      connectionRetries: 5,
+      connectionRetries: 10,
       autoReconnect: true,
       useIPV6: false,
+      timeout: 30,
+      requestRetries: 5,
     });
 
     await clientInstance.start({ botAuthToken: botToken });
