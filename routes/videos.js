@@ -87,7 +87,7 @@ router.get('/stream-tg/:messageId', streamRateLimiter, streamTelegramVideo);
 
 // @desc    Master Manifest Endpoint
 // @route   GET /api/videos/hls/:videoId/master.m3u8
-router.get('/hls/:videoId/master.m3u8', (req, res) => {
+const handleMasterManifest = (req, res) => {
   const { videoId } = req.params;
   const masterPath = path.resolve(__dirname, '..', 'public', 'hls', videoId, 'master.m3u8');
 
@@ -103,8 +103,14 @@ router.get('/hls/:videoId/master.m3u8', (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, max-age=86400');
+  if (req.method === 'HEAD') {
+    return res.status(200).end();
+  }
   return fs.createReadStream(masterPath).pipe(res);
-});
+};
+
+router.get('/hls/:videoId/master.m3u8', handleMasterManifest);
+router.head('/hls/:videoId/master.m3u8', handleMasterManifest);
 
 // @desc    Tracks metadata for frontend inspection (Audio tracks, Subtitles)
 // @route   GET /api/videos/hls/:videoId/tracks.json
@@ -164,6 +170,42 @@ router.get('/subtitles/:videoId/:lang.vtt', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, max-age=86400');
   return fs.createReadStream(subPath).pipe(res);
+});
+
+// ============================================================================
+// STORYBOARD PREVIEW THUMBNAIL SPRITE SHEET ROUTES
+// ============================================================================
+
+// @desc    Serve Storyboard WebVTT Manifest
+// @route   GET /api/videos/storyboard/:videoId/storyboard.vtt
+router.get('/storyboard/:videoId/storyboard.vtt', (req, res) => {
+  const { videoId } = req.params;
+  const vttPath = path.resolve(__dirname, '..', 'public', 'storyboards', videoId, 'storyboard.vtt');
+
+  if (!fs.existsSync(vttPath)) {
+    return res.status(404).send('WEBVTT\n\nNOTE Storyboard not found');
+  }
+
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return fs.createReadStream(vttPath).pipe(res);
+});
+
+// @desc    Serve Storyboard Sprite Sheet Image Tiles
+// @route   GET /api/videos/storyboard/:videoId/:spriteImage
+router.get('/storyboard/:videoId/:spriteImage', (req, res) => {
+  const { videoId, spriteImage } = req.params;
+  const spritePath = path.resolve(__dirname, '..', 'public', 'storyboards', videoId, spriteImage);
+
+  if (!fs.existsSync(spritePath)) {
+    return res.status(404).json({ error: 'Sprite image not found' });
+  }
+
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  return fs.createReadStream(spritePath).pipe(res);
 });
 
 // @desc    Test Producer: Asynchronously enqueue a mock video transcoding job

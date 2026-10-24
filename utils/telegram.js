@@ -297,9 +297,9 @@ const uploadVideoToTelegram = async (filePath, options = {}) => {
  * Stream video chunks with HTTP Range support
  */
 const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) => {
-  // Parse HTTP Range header first
+  // If no Range header is sent (e.g. initial browser probe or direct download), default to initial chunk
   if (!rangeHeader) {
-    return res.status(400).json({ error: 'Requires Range header' });
+    rangeHeader = 'bytes=0-';
   }
 
   // 1. Check Redis for cached video metadata (fileSize, mimeType)

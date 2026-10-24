@@ -219,6 +219,79 @@ const transcodeToHls = async ({ inputPath, outputDir, videoId, probeData, job })
   console.log(`[Worker] Generated master.m3u8 and HLS variants for video ${videoId} at ${outputDir}`);
 };
 
+/**
+ * Generate Storyboard Tile Sprite Sheet & WebVTT Manifest
+ * - Extract 1 frame every 5 seconds (fps=1/5)
+ * - 160x90 per thumbnail
+ * - 10x10 grid sprite sheet (1600x900px total)
+ */
+const generateStoryboard = async ({ inputPath, videoId, duration }) => {
+  const storyboardDir = path.join(__dirname, '..', 'public', 'storyboards', String(videoId));
+  if (!fs.existsSync(storyboardDir)) {
+    fs.mkdirSync(storyboardDir, { recursive: true });
+  }
+
+  const spritePattern = path.join(storyboardDir, 'sprite_%03d.jpg');
+
+  console.log(`[Worker] Generating Storyboard Sprite Sheet for video ${videoId} (duration: ${duration}s)...`);
+
+  await new Promise((resolve, reject) => {
+    // 1 frame every 5 seconds, scale each to 160x90, tile in 10x10 layout
+    const proc = spawn(ffmpegInstaller.path, [
+      '-y',
+      '-i', inputPath,
+      '-vf', 'fps=1/5,scale=160:90,tile=10x10',
+      '-q:v', '3',
+      spritePattern
+    ]);
+
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg storyboard generation exited with code ${code}`));
+    });
+
+    proc.on('error', reject);
+  });
+
+  // Generate matching WebVTT manifest
+  const pad = (num, size = 2) => String(Math.floor(num)).padStart(size, '0');
+  const formatVttTime = (totalSeconds) => {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    const ms = Math.floor((totalSeconds % 1) * 1000);
+    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${pad(ms, 3)}`;
+  };
+
+  const interval = 5;
+  const cols = 10;
+  const rows = 10;
+  const tileW = 160;
+  const tileH = 90;
+  const tilesPerSheet = cols * rows;
+  const totalTiles = Math.max(1, Math.ceil(duration / interval));
+
+  let vtt = 'WEBVTT\n\n';
+  for (let i = 0; i < totalTiles; i++) {
+    const startTime = i * interval;
+    const endTime = Math.min((i + 1) * interval, duration || (startTime + interval));
+    const sheetIndex = Math.floor(i / tilesPerSheet) + 1;
+    const sheetName = `sprite_${String(sheetIndex).padStart(3, '0')}.jpg`;
+    const indexInSheet = i % tilesPerSheet;
+    const col = indexInSheet % cols;
+    const row = Math.floor(indexInSheet / cols);
+    const x = col * tileW;
+    const y = row * tileH;
+
+    vtt += `${formatVttTime(startTime)} --> ${formatVttTime(endTime)}\n`;
+    vtt += `${sheetName}#xywh=${x},${y},${tileW},${tileH}\n\n`;
+  }
+
+  const vttFilePath = path.join(storyboardDir, 'storyboard.vtt');
+  fs.writeFileSync(vttFilePath, vtt, 'utf8');
+  console.log(`[Worker] Storyboard WebVTT written successfully at ${vttFilePath}`);
+};
+
 // BullMQ Worker processing transcode jobs
 const transcodeWorker = new Worker(
   'video-transcode',
@@ -259,10 +332,19 @@ const transcodeWorker = new Worker(
         job,
       });
 
-      // Step 4: Transcoding Complete -> 100%
+      // Step 4: Run FFmpeg Storyboard Sprite Sheet & WebVTT Generator
+      await job.updateProgress(90);
+      const videoDuration = parseFloat(probeData.format?.duration || 0);
+      await generateStoryboard({
+        inputPath: rawInputPath,
+        videoId: msgId,
+        duration: videoDuration,
+      });
+
+      // Step 5: Transcoding Complete -> 100%
       await job.updateProgress(100);
 
-      // Step 5: Clean up temporary raw input.mp4 file
+      // Step 6: Clean up temporary raw input.mp4 file
       if (fs.existsSync(rawInputPath)) {
         fs.unlinkSync(rawInputPath);
       }
