@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const mongoose = require('mongoose');
 const { upload, chunkUpload } = require('../utils/upload');
@@ -7,7 +8,25 @@ const { streamVideo, uploadVideoToDrive, uploadVideoToCloudinary, uploadChunkToD
 const { uploadImage } = require('../utils/cloudinary');
 const Video = require('../models/Video');
 const Series = require('../models/Series');
-const { getCache, setCache, redis, clearCachePattern } = require('../utils/redis');
+const { getCache, setCache, redis, clearCachePattern, checkRateLimit } = require('../utils/redis');
+
+// IP Rate Limiting middleware for Telegram Video Streaming (60 range requests / min)
+const streamRateLimiter = async (req, res, next) => {
+  const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+  const { allowed, remaining } = await checkRateLimit(clientIp, 60, 60);
+
+  res.setHeader('X-RateLimit-Limit', '60');
+  res.setHeader('X-RateLimit-Remaining', String(Math.max(0, remaining)));
+
+  if (!allowed) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({
+      error: 'Too Many Requests',
+      message: 'Rate limit exceeded for video streaming. Please wait a moment before retrying.'
+    });
+  }
+  next();
+};
 const router = express.Router();
 const fs = require('fs');
 
@@ -56,11 +75,122 @@ router.get('/search', async (req, res) => {
 
 // @desc    Stream video from Google Drive or Telegram
 // @route   GET /api/videos/stream/:fileId
-router.get('/stream/:fileId', streamVideo);
+router.get('/stream/:fileId', streamRateLimiter, streamVideo);
 
 // @desc    Stream video directly from Telegram
 // @route   GET /api/videos/stream-tg/:messageId
-router.get('/stream-tg/:messageId', streamTelegramVideo);
+router.get('/stream-tg/:messageId', streamRateLimiter, streamTelegramVideo);
+
+// ============================================================================
+// HLS STREAMING & SUBTITLE ENDPOINTS
+// ============================================================================
+
+// @desc    Master Manifest Endpoint
+// @route   GET /api/videos/hls/:videoId/master.m3u8
+router.get('/hls/:videoId/master.m3u8', (req, res) => {
+  const { videoId } = req.params;
+  const masterPath = path.resolve(__dirname, '..', 'public', 'hls', videoId, 'master.m3u8');
+
+  // Fallback behavior if HLS files do not exist yet (transcoding or not yet started)
+  if (!fs.existsSync(masterPath)) {
+    return res.status(202).json({
+      status: 'transcoding',
+      message: 'HLS stream is not yet ready or is currently transcoding',
+      fallbackUrl: `/api/videos/stream-tg/${videoId}`
+    });
+  }
+
+  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return fs.createReadStream(masterPath).pipe(res);
+});
+
+// @desc    Tracks metadata for frontend inspection (Audio tracks, Subtitles)
+// @route   GET /api/videos/hls/:videoId/tracks.json
+router.get('/hls/:videoId/tracks.json', (req, res) => {
+  const { videoId } = req.params;
+  const tracksPath = path.resolve(__dirname, '..', 'public', 'hls', videoId, 'tracks.json');
+  if (fs.existsSync(tracksPath)) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return fs.createReadStream(tracksPath).pipe(res);
+  }
+  return res.status(404).json({ success: false, message: 'Tracks not found' });
+});
+
+// @desc    Variant Playlist Endpoint (480p.m3u8, 720p.m3u8, 1080p.m3u8)
+// @route   GET /api/videos/hls/:videoId/:playlist.m3u8
+router.get('/hls/:videoId/:playlist.m3u8', (req, res) => {
+  const { videoId, playlist } = req.params;
+  const playlistPath = path.resolve(__dirname, '..', 'public', 'hls', videoId, `${playlist}.m3u8`);
+
+  if (!fs.existsSync(playlistPath)) {
+    return res.status(404).json({ error: 'Variant playlist not found' });
+  }
+
+  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return fs.createReadStream(playlistPath).pipe(res);
+});
+
+// @desc    HLS Transport Stream Segment Endpoint (*.ts)
+// @route   GET /api/videos/hls/:videoId/:segment.ts
+router.get('/hls/:videoId/:segment.ts', (req, res) => {
+  const { videoId, segment } = req.params;
+  const segmentPath = path.resolve(__dirname, '..', 'public', 'hls', videoId, `${segment}.ts`);
+
+  if (!fs.existsSync(segmentPath)) {
+    return res.status(404).json({ error: 'Segment not found' });
+  }
+
+  res.setHeader('Content-Type', 'video/mp2t');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  return fs.createReadStream(segmentPath).pipe(res);
+});
+
+// @desc    Subtitle WebVTT Route
+// @route   GET /api/videos/subtitles/:videoId/:lang.vtt
+router.get('/subtitles/:videoId/:lang.vtt', (req, res) => {
+  const { videoId, lang } = req.params;
+  const subPath = path.resolve(__dirname, '..', 'public', 'subtitles', videoId, `${lang}.vtt`);
+
+  if (!fs.existsSync(subPath)) {
+    return res.status(404).send('WEBVTT\n\nNOTE Subtitle not found');
+  }
+
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return fs.createReadStream(subPath).pipe(res);
+});
+
+// @desc    Test Producer: Asynchronously enqueue a mock video transcoding job
+// @route   POST /api/videos/test-queue
+router.post('/test-queue', async (req, res) => {
+  try {
+    const { videoId = '27', telegramFileId = 'tg_sample_file' } = req.body || {};
+    const { addTranscodeJob } = require('../queues/transcodeQueue');
+
+    const job = await addTranscodeJob({
+      videoId,
+      telegramFileId,
+      queuedAt: new Date().toISOString()
+    });
+
+    return res.status(202).json({
+      success: true,
+      status: 'queued',
+      message: 'Video transcode job has been asynchronously enqueued',
+      jobId: job.id,
+      data: { videoId, telegramFileId }
+    });
+  } catch (err) {
+    console.error('Queue producer error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // @desc    Get live status of Telegram uploads
 // @route   GET /api/videos/telegram-upload-status

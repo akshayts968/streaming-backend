@@ -60,6 +60,14 @@ app.use('/api/videos', require('./routes/videos'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/series', require('./routes/series'));
 
+// Initialize BullMQ Background Workers
+try {
+  require('./workers/transcodeWorker');
+  console.log('✅ BullMQ Transcode Worker initialized');
+} catch (wErr) {
+  console.warn('⚠️ Transcode Worker initialization notice:', wErr.message);
+}
+
 app.get('/', (req, res) => {
   res.send('Antigravity Stream API is running...');
 });

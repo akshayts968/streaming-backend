@@ -1,3 +1,4 @@
+const { getVideoMetadataCache, setVideoMetadataCache, getVideoChunkCache, setVideoChunkCache, acquireChunkLock, releaseChunkLock } = require('./redis');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
@@ -295,63 +296,189 @@ const uploadVideoToTelegram = async (filePath, options = {}) => {
 /**
  * Stream video chunks with HTTP Range support
  */
-const streamVideoFromTelegram = async (messageId, rangeHeader, res) => {
-  const client = await getTelegramClient();
-  const chatId = getTargetChatId();
-
-  const msgs = await client.getMessages(chatId, { ids: [parseInt(messageId, 10)] });
-  const msg = msgs && msgs[0];
-
-  if (!msg || !msg.media) {
-    return res.status(404).json({ error: 'Video media not found on Telegram for this message ID' });
+const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) => {
+  // Parse HTTP Range header first
+  if (!rangeHeader) {
+    return res.status(400).json({ error: 'Requires Range header' });
   }
 
-  const doc = msg.media.document || msg.media.video;
-  const fileSize = doc?.size ? Number(doc.size) : null;
+  // 1. Check Redis for cached video metadata (fileSize, mimeType)
+  let metadata = await getVideoMetadataCache(messageId);
+  let client = null;
+  let msg = null;
+  let doc = null;
 
-  if (!fileSize) {
-    return res.status(400).json({ error: 'Could not determine Telegram file size' });
+  if (!metadata) {
+    client = await getTelegramClient();
+    const chatId = getTargetChatId();
+    const msgs = await client.getMessages(chatId, { ids: [parseInt(messageId, 10)] });
+    msg = msgs && msgs[0];
+
+    if (!msg || !msg.media) {
+      return res.status(404).json({ error: 'Video media not found on Telegram for this message ID' });
+    }
+
+    doc = msg.media.document || msg.media.video;
+    const docSize = doc?.size ? Number(doc.size) : null;
+
+    if (!docSize) {
+      return res.status(400).json({ error: 'Could not determine Telegram file size' });
+    }
+
+    metadata = {
+      fileSize: docSize,
+      mimeType: doc.mimeType || 'video/mp4'
+    };
+
+    // Cache metadata in Redis (7 days TTL)
+    await setVideoMetadataCache(messageId, metadata);
   }
 
-  const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunk buffer for fast start
-  let start = 0;
-  let end = fileSize - 1;
+  const fileSize = metadata.fileSize;
+  const mimeType = metadata.mimeType;
 
-  if (rangeHeader) {
-    const parts = rangeHeader.replace(/bytes=/, '').split('-');
-    start = parseInt(parts[0], 10);
-    end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + CHUNK_SIZE, fileSize - 1);
+  // Validate and parse requested byte range
+  const parts = rangeHeader.replace(/bytes=/, '').split('-');
+  const start = parseInt(parts[0], 10);
+  if (isNaN(start) || start < 0 || start >= fileSize) {
+    res.setHeader('Content-Range', `bytes */${fileSize}`);
+    return res.status(416).json({ error: 'Requested range not satisfiable' });
   }
 
-  const contentLength = end - start + 1;
+  // Cap non-initial chunk size up to 5MB
+  const MAX_CHUNK_SIZE = 5 * 1024 * 1024;
+  let end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + MAX_CHUNK_SIZE - 1, fileSize - 1);
+  if (isNaN(end) || end >= fileSize) {
+    end = fileSize - 1;
+  }
+  if (end < start) {
+    end = start;
+  }
+
+  const chunkSize = end - start + 1;
+  const rangeStr = `${start}-${end}`;
+
+  // 2. Check if this is an initial header chunk (0-1MB or 0-2MB) eligible for Redis chunk caching
+  const isInitialChunk = start === 0 && (chunkSize <= 2 * 1024 * 1024);
+
+  if (isInitialChunk) {
+    const cachedChunk = await getVideoChunkCache(messageId, rangeStr);
+    if (cachedChunk) {
+      // CACHE HIT: Serve directly from Redis memory in < 20ms
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': cachedChunk.length,
+        'Content-Type': (mimeType === 'video/x-matroska' || !mimeType) ? 'video/mp4' : mimeType,
+        'Cache-Control': 'no-cache',
+        'X-Cache': 'HIT',
+      });
+      return res.end(cachedChunk);
+    }
+  }
+
+  // 3. Request Coalescing / Mutex Lock for initial chunks
+  let lockAcquired = false;
+  if (isInitialChunk) {
+    lockAcquired = await acquireChunkLock(messageId, rangeStr, 5000);
+    if (!lockAcquired) {
+      // Another concurrent request is already fetching this chunk!
+      // Wait briefly (up to 2 seconds) and check cache
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(r => setTimeout(r, 200));
+        const chunkAfterWait = await getVideoChunkCache(messageId, rangeStr);
+        if (chunkAfterWait) {
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': chunkAfterWait.length,
+            'Content-Type': (mimeType === 'video/x-matroska' || !mimeType) ? 'video/mp4' : mimeType,
+            'Cache-Control': 'no-cache',
+            'X-Cache': 'HIT',
+          });
+          return res.end(chunkAfterWait);
+        }
+      }
+    }
+  }
+
+  // Cache MISS - Fetch chunk from Telegram via GramJS
+  if (!client || !msg) {
+    client = await getTelegramClient();
+    const chatId = getTargetChatId();
+    const msgs = await client.getMessages(chatId, { ids: [parseInt(messageId, 10)] });
+    msg = msgs && msgs[0];
+    if (!msg || !msg.media) {
+      if (lockAcquired) await releaseChunkLock(messageId, rangeStr);
+      return res.status(404).json({ error: 'Video media not found on Telegram' });
+    }
+  }
 
   res.writeHead(206, {
     'Content-Range': `bytes ${start}-${end}/${fileSize}`,
     'Accept-Ranges': 'bytes',
-    'Content-Length': contentLength,
-    'Content-Type': doc.mimeType || 'video/mp4',
+    'Content-Length': chunkSize,
+    'Content-Type': (mimeType === 'video/x-matroska' || !mimeType) ? 'video/mp4' : mimeType,
+    'Cache-Control': 'no-cache',
+    'X-Cache': 'MISS',
   });
 
   let aborted = false;
-  res.on('close', () => {
+  const cleanup = () => {
     aborted = true;
-  });
+  };
+
+  res.on('close', cleanup);
+  if (req) {
+    req.on('close', cleanup);
+    req.on('aborted', cleanup);
+  }
+
+  const chunkBuffers = isInitialChunk ? [] : null;
 
   try {
     for await (const chunk of client.iterDownload({
       file: msg.media,
       offset: bigInt(start),
-      limit: contentLength,
+      limit: chunkSize,
       requestSize: 512 * 1024,
+      workers: 4,
     })) {
       if (aborted) break;
-      res.write(chunk);
+
+      const bufChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (isInitialChunk) {
+        chunkBuffers.push(bufChunk);
+      }
+
+      // Handle backpressure
+      if (!res.destroyed && !aborted) {
+        const canContinue = res.write(bufChunk);
+        if (!canContinue) {
+          await new Promise((resolve) => {
+            res.once('drain', resolve);
+            res.once('close', resolve);
+          });
+        }
+      }
     }
-    if (!aborted) res.end();
+
+    if (!res.destroyed) {
+      res.end();
+    }
+    // Store complete initial chunk buffer in Redis cache (24 hours TTL)
+    if (isInitialChunk && chunkBuffers && chunkBuffers.length > 0) {
+      const fullBuffer = Buffer.concat(chunkBuffers).subarray(0, chunkSize);
+      await setVideoChunkCache(messageId, rangeStr, fullBuffer);
+    }
   } catch (err) {
     if (!aborted && !res.headersSent) {
       console.error('Telegram streaming error:', err.message);
       res.status(500).end();
+    }
+  } finally {
+    if (lockAcquired) {
+      await releaseChunkLock(messageId, rangeStr);
     }
   }
 };

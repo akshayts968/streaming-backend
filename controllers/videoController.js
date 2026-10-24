@@ -354,7 +354,7 @@ const streamTelegramThumbnail = async (req, res) => {
 
 const streamTelegramVideo = async (req, res) => {
     try {
-        await streamVideoFromTelegram(req.params.messageId, req.headers.range, res);
+        await streamVideoFromTelegram(req.params.messageId, req.headers.range, res, req);
     } catch (err) {
         console.error('Telegram Stream Error:', err.message);
         if (!res.headersSent) res.status(500).json({ error: "Telegram Stream Failed: " + err.message });

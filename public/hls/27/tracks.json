@@ -1,0 +1,38 @@
+{
+  "audioTracks": [
+    {
+      "id": 0,
+      "name": "English",
+      "language": "en"
+    },
+    {
+      "id": 1,
+      "name": "Hindi",
+      "language": "hi"
+    },
+    {
+      "id": 2,
+      "name": "Tamil",
+      "language": "ta"
+    },
+    {
+      "id": 3,
+      "name": "Malayalam",
+      "language": "ml"
+    }
+  ],
+  "subtitles": [
+    {
+      "id": 0,
+      "name": "English",
+      "language": "en",
+      "url": "/api/videos/subtitles/27/en.vtt"
+    },
+    {
+      "id": 1,
+      "name": "Malayalam",
+      "language": "ml",
+      "url": "/api/videos/subtitles/27/ml.vtt"
+    }
+  ]
+}
