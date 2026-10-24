@@ -435,6 +435,7 @@ const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) 
   }
 
   const chunkBuffers = isInitialChunk ? [] : null;
+  let totalBytesSent = 0;
 
   try {
     for await (const chunk of client.iterDownload({
@@ -446,7 +447,16 @@ const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) 
     })) {
       if (aborted) break;
 
-      const bufChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      let bufChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      // Ensure we do not stream beyond the requested range
+      const remainingBytes = chunkSize - totalBytesSent;
+      if (remainingBytes <= 0) break;
+
+      if (bufChunk.length > remainingBytes) {
+        bufChunk = bufChunk.subarray(0, remainingBytes);
+      }
+
+      totalBytesSent += bufChunk.length;
       if (isInitialChunk) {
         chunkBuffers.push(bufChunk);
       }
@@ -460,6 +470,10 @@ const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) 
             res.once('close', resolve);
           });
         }
+      }
+
+      if (totalBytesSent >= chunkSize) {
+        break;
       }
     }
 
@@ -1566,6 +1580,7 @@ const publishPendingTelegramVideo = async ({
 
 module.exports = {
   getTelegramClient,
+  getTargetChatId,
   uploadVideoToTelegram,
   streamVideoFromTelegram,
   listChannelVideos,
