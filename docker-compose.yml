@@ -1,0 +1,45 @@
+services:
+  backend:
+    build:
+      context: ./streaming-backend
+      dockerfile: Dockerfile
+    container_name: antigravity-backend
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    env_file:
+      - ./streaming-backend/.env
+    environment:
+      - NODE_ENV=production
+      - PORT=5001
+      - FRONTEND_URL=http://localhost:3000
+    volumes:
+      - ./streaming-backend/public/subtitles:/app/public/subtitles
+      - ./streaming-backend/public/storyboards:/app/public/storyboards
+      - ./streaming-backend/public/hls:/app/public/hls
+      - ./streaming-backend/uploads:/app/uploads
+    networks:
+      - antigravity-network
+
+  frontend:
+    build:
+      context: ./streaming-frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:5001
+    container_name: antigravity-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:5001
+    depends_on:
+      - backend
+    networks:
+      - antigravity-network
+
+networks:
+  antigravity-network:
+    driver: bridge
