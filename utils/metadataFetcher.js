@@ -9,9 +9,10 @@ const validCategories = [
 const extractTitleAndYear = (raw = '') => {
   let clean = raw.replace(/\.[^/.]+$/, '').trim();
 
-  // 1. Extract year if present
+  // 1. Extract year if present (handle both "(2025)" and "2025)" patterns)
   let year = null;
-  const yearMatch = clean.match(/[\s\.\(\[\-_]((?:19|20)\d{2})(?:[\s\.\)\]\-_]|$)/);
+  const yearMatch = clean.match(/(?:[\s\.\(\[\-_])((?:19|20)\d{2})(?:[\s\.\)\]\-_]|$)/) ||
+                    clean.match(/\s((?:19|20)\d{2})\)/);
   if (yearMatch) {
     year = yearMatch[1];
   }
@@ -244,7 +245,10 @@ const fetchVideoMetadata = async ({ rawFileName = '', text = '', isEpisode = fal
   
   // Clean text from m/s type flags if user passed caption with flag
   const cleanCaption = text ? text.replace(/(?:^|\s)[ms](?:\s|$)/gi, ' ').replace(/\b(movie|film|series|show|tv)\b/gi, ' ').trim() : '';
-  const targetTitle = seriesTitle || (cleanCaption && cleanCaption.length > 1 && !detectedIsEp ? cleanCaption : null) || extracted.title || rawFileName;
+  // Only use caption as title if it's SHORT and doesn't look like Telegram spam/forwarding text
+  const captionLooksLikeTitle = cleanCaption && cleanCaption.length > 1 && cleanCaption.length < 60 &&
+    !/file will be deleted|PLEASE FORWARD|t\.me\/|join this channel|forward file|saved message|contacts/i.test(cleanCaption);
+  const targetTitle = seriesTitle || (captionLooksLikeTitle && !detectedIsEp ? cleanCaption : null) || extracted.title || rawFileName;
   const targetYear = extracted.year;
 
   if (detectedIsEp) {

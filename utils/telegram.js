@@ -20,6 +20,7 @@ const recentPhotosBySender = new Map(); // senderChatId -> { messageId, timestam
 const fs = require('fs');
 const path = require('path');
 const { fetchVideoMetadata } = require('./metadataFetcher');
+const { uploadImage } = require('./cloudinary');
 
 const downloadMediaSafe = async (client, mediaOrMsg) => {
   try {
@@ -1068,7 +1069,15 @@ const initTelegramListener = async () => {
               if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
               const cacheFile = path.join(cacheDir, `thumb_${message.id}.jpg`);
               fs.writeFileSync(cacheFile, buffer);
-              thumbUrl = `/api/videos/thumbnail-tg/${message.id}`;
+              // Try uploading to Cloudinary for persistent public URL
+              try {
+                const cloudUrl = await uploadImage(cacheFile);
+                thumbUrl = cloudUrl;
+                console.log('[Telegram Photo] Uploaded to Cloudinary:', cloudUrl);
+              } catch (cloudErr) {
+                console.warn('[Telegram Photo] Cloudinary upload failed, using local URL:', cloudErr.message);
+                thumbUrl = `/api/videos/thumbnail-tg/${message.id}`;
+              }
             }
           } catch (dlErr) {
             console.error('[Telegram Photo Download Error]:', dlErr.message);
@@ -1080,6 +1089,7 @@ const initTelegramListener = async () => {
             if (senderChatId && thumbUrl) {
               recentPhotosBySender.set(senderChatId, {
                 messageId: message.id,
+                thumbUrl: thumbUrl,
                 timestamp: Date.now()
               });
               await client.sendMessage(message.chatId, {
@@ -1214,7 +1224,7 @@ const initTelegramListener = async () => {
           let existingThumbUrl = null;
           const recentPhoto = senderChatId ? recentPhotosBySender.get(senderChatId) : null;
           if (recentPhoto && (Date.now() - recentPhoto.timestamp < 10 * 60 * 1000)) {
-            existingThumbUrl = `/api/videos/thumbnail-tg/${recentPhoto.messageId}`;
+            existingThumbUrl = recentPhoto.thumbUrl || `/api/videos/thumbnail-tg/${recentPhoto.messageId}`;
             recentPhotosBySender.delete(senderChatId);
           }
 
@@ -1265,7 +1275,9 @@ const initTelegramListener = async () => {
             ? parsed.category
             : (hasInternetMatch && internetData.category?.length ? internetData.category : ['Drama', 'Action']);
 
-          const finalDescription = parsed.description || (hasInternetMatch ? internetData.description : '');
+          // Fix: Don't use parsed.description if it looks like Telegram spam/channel forward text
+          const isSpamDesc = parsed.description && /file will be deleted|PLEASE FORWARD|t\.me\/|join this channel|forward file|saved message|contacts|3 minutes/i.test(parsed.description);
+          const finalDescription = (!isSpamDesc && parsed.description) ? parsed.description : (hasInternetMatch ? internetData.description : '');
           const finalThumbUrl = existingThumbUrl || (hasInternetMatch ? internetData.posterUrl : null);
 
           const pendingItem = {
