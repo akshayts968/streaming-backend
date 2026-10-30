@@ -60,6 +60,7 @@ app.use('/api/videos', require('./routes/videos'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/series', require('./routes/series'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/v1/stream', require('./routes/stream'));
 
 // Initialize BullMQ Background Workers
 try {
