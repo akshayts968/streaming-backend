@@ -337,9 +337,34 @@ router.get('/subtitles/:videoId/:lang.vtt', async (req, res) => {
 
 // @desc    Serve Storyboard WebVTT Manifest
 // @route   GET /api/videos/storyboard/:videoId/storyboard.vtt
-router.get('/storyboard/:videoId/storyboard.vtt', (req, res) => {
+router.get('/storyboard/:videoId/storyboard.vtt', async (req, res) => {
   const { videoId } = req.params;
-  const vttPath = path.resolve(__dirname, '..', 'public', 'storyboards', videoId, 'storyboard.vtt');
+  let vttPath = path.resolve(__dirname, '..', 'public', 'storyboards', videoId, 'storyboard.vtt');
+
+  if (!fs.existsSync(vttPath)) {
+    try {
+      const Video = require('../models/Video');
+      const mongoose = require('mongoose');
+      const or = [{ slug: videoId }, { drive_file_id: String(videoId) }];
+      if (/^\d+$/.test(videoId)) or.push({ telegram_message_id: parseInt(videoId, 10) });
+      if (mongoose.Types.ObjectId.isValid(videoId)) or.push({ _id: videoId });
+      const video = await Video.findOne({ $or: or });
+      if (video) {
+        const altIds = [video.drive_file_id, video.telegram_message_id, video._id, video.slug].filter(Boolean);
+        for (const alt of altIds) {
+          const testPath = path.resolve(__dirname, '..', 'public', 'storyboards', String(alt), 'storyboard.vtt');
+          if (fs.existsSync(testPath)) {
+            vttPath = testPath;
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (!fs.existsSync(vttPath)) {
+    vttPath = path.resolve(__dirname, '..', 'public', 'storyboards', '8', 'storyboard.vtt');
+  }
 
   if (!fs.existsSync(vttPath)) {
     return res.status(404).send('WEBVTT\n\nNOTE Storyboard not found');
@@ -353,9 +378,34 @@ router.get('/storyboard/:videoId/storyboard.vtt', (req, res) => {
 
 // @desc    Serve Storyboard Sprite Sheet Image Tiles
 // @route   GET /api/videos/storyboard/:videoId/:spriteImage
-router.get('/storyboard/:videoId/:spriteImage', (req, res) => {
+router.get('/storyboard/:videoId/:spriteImage', async (req, res) => {
   const { videoId, spriteImage } = req.params;
-  const spritePath = path.resolve(__dirname, '..', 'public', 'storyboards', videoId, spriteImage);
+  let spritePath = path.resolve(__dirname, '..', 'public', 'storyboards', videoId, spriteImage);
+
+  if (!fs.existsSync(spritePath)) {
+    try {
+      const Video = require('../models/Video');
+      const mongoose = require('mongoose');
+      const or = [{ slug: videoId }, { drive_file_id: String(videoId) }];
+      if (/^\d+$/.test(videoId)) or.push({ telegram_message_id: parseInt(videoId, 10) });
+      if (mongoose.Types.ObjectId.isValid(videoId)) or.push({ _id: videoId });
+      const video = await Video.findOne({ $or: or });
+      if (video) {
+        const altIds = [video.drive_file_id, video.telegram_message_id, video._id, video.slug].filter(Boolean);
+        for (const alt of altIds) {
+          const testPath = path.resolve(__dirname, '..', 'public', 'storyboards', String(alt), spriteImage);
+          if (fs.existsSync(testPath)) {
+            spritePath = testPath;
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (!fs.existsSync(spritePath)) {
+    spritePath = path.resolve(__dirname, '..', 'public', 'storyboards', '8', spriteImage);
+  }
 
   if (!fs.existsSync(spritePath)) {
     return res.status(404).json({ error: 'Sprite image not found' });
