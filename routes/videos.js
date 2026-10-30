@@ -137,7 +137,29 @@ router.get('/stream/:fileId', streamRateLimiter, streamVideo);
 
 // @desc    Stream video directly from Telegram
 // @route   GET /api/videos/stream-tg/:messageId
-router.get('/stream-tg/:messageId', streamRateLimiter, streamTelegramVideo);
+// Anti-direct download protection: block external download tools, curl, or direct address bar downloads
+const antiDirectDownload = (req, res, next) => {
+  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  
+  const secFetchDest = req.headers['sec-fetch-dest'];
+  const secFetchMode = req.headers['sec-fetch-mode'];
+  const userAgent = req.headers['user-agent'] || '';
+
+  // Block known standalone download managers
+  if (/idm|aria2|wget|jdownloader|internet download manager/i.test(userAgent)) {
+    return res.status(403).json({ error: 'Direct downloads via download managers are forbidden.' });
+  }
+
+  // Block top-level document navigation (typing URL in address bar to download)
+  if (secFetchDest === 'document' && secFetchMode === 'navigate') {
+    return res.status(403).send('Direct downloading of media streams is forbidden. Please play from the application player.');
+  }
+
+  next();
+};
+
+router.get('/stream-tg/:messageId', antiDirectDownload, streamRateLimiter, streamTelegramVideo);
 
 // ============================================================================
 // HLS STREAMING & SUBTITLE ENDPOINTS

@@ -293,4 +293,46 @@ router.delete('/featured/:videoId', optionalAdminAuth, async (req, res) => {
   }
 });
 
+/**
+ * @desc    Trigger video transcode to AES-128 HLS
+ * @route   POST /api/admin/transcode/:videoId
+ */
+router.post('/transcode/:videoId', optionalAdminAuth, async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const Video = require('../models/Video');
+    const { addTranscodeJob } = require('../queues/transcodeQueue');
+
+    const video = await Video.findOne({
+      $or: [
+        { _id: require('mongoose').Types.ObjectId.isValid(videoId) ? videoId : null },
+        { slug: videoId },
+        { drive_file_id: String(videoId) },
+        { telegram_message_id: /^\d+$/.test(videoId) ? parseInt(videoId, 10) : null }
+      ].filter(Boolean)
+    });
+
+    if (!video) {
+      return res.status(404).json({ success: false, message: 'Video not found' });
+    }
+
+    const job = await addTranscodeJob({
+      videoId: video.drive_file_id || String(video.telegram_message_id) || String(video._id),
+      messageId: video.telegram_message_id || video.drive_file_id,
+      telegramFileId: video.telegram_file_id,
+      title: video.title,
+      targetResolutions: ['1080p', '720p', '480p']
+    });
+
+    res.json({
+      success: true,
+      message: `Transcode job scheduled for "${video.title}"`,
+      jobId: job.id
+    });
+  } catch (err) {
+    console.error('Trigger transcode error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
