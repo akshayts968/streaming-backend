@@ -194,14 +194,71 @@ router.head('/hls/:videoId/master.m3u8', handleMasterManifest);
 
 // @desc    Tracks metadata for frontend inspection (Audio tracks, Subtitles)
 // @route   GET /api/videos/hls/:videoId/tracks.json
-router.get('/hls/:videoId/tracks.json', (req, res) => {
+router.get('/hls/:videoId/tracks.json', async (req, res) => {
   const { videoId } = req.params;
   const tracksPath = path.resolve(__dirname, '..', 'public', 'hls', videoId, 'tracks.json');
   if (fs.existsSync(tracksPath)) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     return fs.createReadStream(tracksPath).pipe(res);
   }
-  return res.status(404).json({ success: false, message: 'Tracks not found' });
+
+  // Look up video to find associated IDs (messageId, drive_file_id, etc.)
+  let searchIds = [videoId];
+  try {
+    const Video = require('../models/Video');
+    const mongoose = require('mongoose');
+    const or = [{ slug: videoId }, { drive_file_id: String(videoId) }];
+    if (/^\d+$/.test(videoId)) or.push({ telegram_message_id: parseInt(videoId, 10) });
+    if (mongoose.Types.ObjectId.isValid(videoId)) or.push({ _id: videoId });
+    const video = await Video.findOne({ $or: or });
+    if (video) {
+      if (video.drive_file_id) searchIds.push(String(video.drive_file_id));
+      if (video.telegram_message_id) searchIds.push(String(video.telegram_message_id));
+      if (video._id) searchIds.push(String(video._id));
+      if (video.slug) searchIds.push(video.slug);
+    }
+  } catch {}
+
+  const languageMap = {
+    en: 'English', eng: 'English',
+    ml: 'Malayalam', mal: 'Malayalam',
+    hi: 'Hindi', hin: 'Hindi',
+    ta: 'Tamil', tam: 'Tamil',
+    te: 'Telugu', tel: 'Telugu',
+    es: 'Spanish', spa: 'Spanish',
+    fr: 'French', fre: 'French',
+    ar: 'Arabic', ara: 'Arabic'
+  };
+
+  let subtitles = [];
+  for (const id of searchIds) {
+    const subsDir = path.resolve(__dirname, '..', 'public', 'subtitles', String(id));
+    if (fs.existsSync(subsDir)) {
+      const files = fs.readdirSync(subsDir).filter(f => f.endsWith('.vtt'));
+      files.forEach(f => {
+        const lang = f.replace('.vtt', '').toLowerCase();
+        const title = languageMap[lang] || lang.toUpperCase();
+        if (!subtitles.some(s => s.lang === lang)) {
+          subtitles.push({
+            lang,
+            language: lang,
+            title,
+            name: title,
+            url: `/api/videos/subtitles/${id}/${f}`
+          });
+        }
+      });
+    }
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  return res.json({
+    success: true,
+    audioTracks: [
+      { id: 0, name: 'Default Audio (Original)', lang: 'original', default: true }
+    ],
+    subtitles
+  });
 });
 
 // @desc    Variant Playlist Endpoint (480p.m3u8, 720p.m3u8, 1080p.m3u8)
