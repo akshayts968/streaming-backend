@@ -28,6 +28,64 @@ const streamRateLimiter = async (req, res, next) => {
   next();
 };
 const router = express.Router();
+
+// @desc    Get public featured movies list (Hero Carousel)
+// @route   GET /api/videos/featured
+router.get('/featured', async (req, res) => {
+  try {
+    const { getRedisClient } = require('../utils/redis');
+    const redis = getRedisClient();
+    let featured = [];
+    if (redis) {
+      try {
+        const raw = await redis.get('featured:movies');
+        if (raw) {
+          featured = JSON.parse(raw);
+          if (!Array.isArray(featured)) featured = [];
+        }
+      } catch (redisErr) {
+        console.error('Redis featured read error:', redisErr.message);
+      }
+    }
+
+    if (featured.length > 0) {
+      featured.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      return res.status(200).json({
+        success: true,
+        source: 'redis',
+        count: featured.length,
+        data: featured
+      });
+    }
+
+    // Fall back to 5 most recent videos if Redis key is empty
+    const recentVideos = await Video.find({ isPublished: { $ne: false } })
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    const fallbackFeatured = recentVideos.map((v, idx) => ({
+      videoId: v.drive_file_id || (v.telegram_message_id ? String(v.telegram_message_id) : String(v._id)),
+      title: v.title,
+      bannerUrl: v.thumbnailUrl || '',
+      description: v.description || '',
+      ctaText: 'Watch Now',
+      ctaLink: '/watch/' + (v.slug || v._id),
+      order: idx + 1,
+      createdAt: v.createdAt ? v.createdAt.toISOString() : new Date().toISOString()
+    }));
+
+    return res.status(200).json({
+      success: true,
+      source: 'fallback',
+      count: fallbackFeatured.length,
+      data: fallbackFeatured
+    });
+  } catch (err) {
+    console.error('GET /api/videos/featured error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 const fs = require('fs');
 
 const uploadFields = upload.fields([
@@ -474,12 +532,17 @@ router.get('/:id', async (req, res) => {
     const id = req.params.id;
     let query;
 
-    // Check if the provided ID is a valid MongoDB ObjectId
+    // Check if the provided ID is a valid MongoDB ObjectId or telegram message id or drive file id or slug
+    const queries = [{ slug: id }];
     if (mongoose.Types.ObjectId.isValid(id)) {
-      query = { $or: [{ _id: id }, { slug: id }] };
-    } else {
-      query = { slug: id };
+      queries.push({ _id: id });
     }
+    queries.push({ drive_file_id: String(id) });
+    const num = parseInt(id, 10);
+    if (!isNaN(num)) {
+      queries.push({ telegram_message_id: num });
+    }
+    query = { $or: queries };
 
     const video = await Video.findOne(query).populate('creator', 'username');
     if (!video) return res.status(404).json({ success: false, message: 'Video not found' });
