@@ -295,9 +295,31 @@ router.get('/hls/:videoId/:segment.ts', (req, res) => {
 
 // @desc    Subtitle WebVTT Route
 // @route   GET /api/videos/subtitles/:videoId/:lang.vtt
-router.get('/subtitles/:videoId/:lang.vtt', (req, res) => {
+router.get('/subtitles/:videoId/:lang.vtt', async (req, res) => {
   const { videoId, lang } = req.params;
-  const subPath = path.resolve(__dirname, '..', 'public', 'subtitles', videoId, `${lang}.vtt`);
+  let subPath = path.resolve(__dirname, '..', 'public', 'subtitles', videoId, `${lang}.vtt`);
+
+  if (!fs.existsSync(subPath)) {
+    // Try resolving by video slug, messageId, or driveFileId
+    try {
+      const Video = require('../models/Video');
+      const mongoose = require('mongoose');
+      const or = [{ slug: videoId }, { drive_file_id: String(videoId) }];
+      if (/^\d+$/.test(videoId)) or.push({ telegram_message_id: parseInt(videoId, 10) });
+      if (mongoose.Types.ObjectId.isValid(videoId)) or.push({ _id: videoId });
+      const video = await Video.findOne({ $or: or });
+      if (video) {
+        const altIds = [video.drive_file_id, video.telegram_message_id, video._id, video.slug].filter(Boolean);
+        for (const alt of altIds) {
+          const testPath = path.resolve(__dirname, '..', 'public', 'subtitles', String(alt), `${lang}.vtt`);
+          if (fs.existsSync(testPath)) {
+            subPath = testPath;
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
 
   if (!fs.existsSync(subPath)) {
     return res.status(404).send('WEBVTT\n\nNOTE Subtitle not found');
