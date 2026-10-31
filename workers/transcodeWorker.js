@@ -115,16 +115,33 @@ const transcodeToHls = async ({ inputPath, outputDir, videoId, probeData, job })
     }
   }
 
-  // Multi-Bitrate HLS variants: 1080p, 720p, 480p
-  // Spec:
-  // 1080p: 1920x1080, 5000k video, 192k audio
-  // 720p: 1280x720, 2800k video, 128k audio
-  // 480p: 854x480, 1400k video, 96k audio
-  const variants = [
-    { name: '1080p', width: 1920, height: 1080, vBitrate: '5000k', aBitrate: '192k', bandwidth: 5500000 },
-    { name: '720p', width: 1280, height: 720, vBitrate: '2800k', aBitrate: '128k', bandwidth: 3000000 },
-    { name: '480p', width: 854, height: 480, vBitrate: '1400k', aBitrate: '96k', bandwidth: 1550000 },
+  const videoStream = streams.find(s => s.codec_type === 'video');
+  const srcWidth = videoStream?.width || 1920;
+  const srcHeight = videoStream?.height || 1080;
+  console.log(`[Worker] Detected source resolution: ${srcWidth}x${srcHeight} for video ${videoId}`);
+
+  // Multi-Bitrate HLS variants: 2k (1440p), 1080p, 720p, 480p, 360p
+  // We only include variants up to the source resolution (or scale gracefully)
+  const candidateVariants = [
+    { name: '1440p', label: '2K', width: 2560, height: 1440, vBitrate: '8500k', aBitrate: '256k', bandwidth: 9000000 },
+    { name: '1080p', label: '1080p', width: 1920, height: 1080, vBitrate: '4500k', aBitrate: '192k', bandwidth: 5000000 },
+    { name: '720p', label: '720p', width: 1280, height: 720, vBitrate: '2500k', aBitrate: '128k', bandwidth: 2800000 },
+    { name: '480p', label: '480p', width: 854, height: 480, vBitrate: '1200k', aBitrate: '96k', bandwidth: 1400000 },
+    { name: '360p', label: '360p', width: 640, height: 360, vBitrate: '700k', aBitrate: '64k', bandwidth: 800000 },
   ];
+
+  // Include 1440p only if source height >= 1440 (or width >= 2560)
+  // Include 1080p if source height >= 1000
+  // Always include 720p, 480p, and 360p
+  const variants = candidateVariants.filter(v => {
+    if (v.height > 1080) {
+      return srcHeight >= 1400 || srcWidth >= 2500;
+    }
+    if (v.height === 1080) {
+      return srcHeight >= 900;
+    }
+    return true;
+  });
 
   for (let idx = 0; idx < variants.length; idx++) {
     const v = variants[idx];
@@ -213,7 +230,14 @@ const transcodeToHls = async ({ inputPath, outputDir, videoId, probeData, job })
       language: a.tags?.language || (i === 0 ? 'en' : `aud_${i}`),
       name: a.tags?.title || (a.tags?.language === 'eng' ? 'English' : 'Audio Track ' + (i + 1))
     })),
-    subtitles: subtitleEntries
+    subtitles: subtitleEntries,
+    qualities: variants.map(v => ({
+      name: v.name,
+      label: v.label,
+      height: v.height,
+      width: v.width,
+      bitrate: v.bandwidth
+    }))
   }, null, 2));
 
   console.log(`[Worker] Generated master.m3u8 and HLS variants for video ${videoId} at ${outputDir}`);
