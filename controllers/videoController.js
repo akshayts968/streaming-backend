@@ -357,7 +357,30 @@ const streamTelegramThumbnail = async (req, res) => {
 
 const streamTelegramVideo = async (req, res) => {
     try {
-        await streamVideoFromTelegram(req.params.messageId, req.headers.range, res, req);
+        let messageId = req.params.messageId;
+
+        // Resolve ID if caller passed a slug, mongoId, or drive_file_id instead of a raw telegram_message_id
+        if (!/^\d+$/.test(messageId)) {
+            const Video = require('../models/Video');
+            const mongoose = require('mongoose');
+            const or = [{ slug: messageId }, { drive_file_id: messageId }];
+            if (mongoose.Types.ObjectId.isValid(messageId)) or.push({ _id: messageId });
+            const found = await Video.findOne({ $or: or });
+            if (found && found.telegram_message_id) {
+                messageId = String(found.telegram_message_id);
+            }
+        } else {
+            // Even if numeric, check if it's an old/legacy ID mapped in Video model
+            const Video = require('../models/Video');
+            const found = await Video.findOne({
+                $or: [{ drive_file_id: messageId }, { telegram_message_id: parseInt(messageId, 10) }]
+            });
+            if (found && found.telegram_message_id) {
+                messageId = String(found.telegram_message_id);
+            }
+        }
+
+        await streamVideoFromTelegram(messageId, req.headers.range, res, req);
     } catch (err) {
         console.error('Telegram Stream Error:', err.message);
         if (!res.headersSent) res.status(500).json({ error: "Telegram Stream Failed: " + err.message });
