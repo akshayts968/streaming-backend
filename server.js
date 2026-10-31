@@ -19,11 +19,24 @@ const path = require('path');
 app.use(express.json());
 
 // Enable CORS
-const corsOptions = {
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  optionsSuccessStatus: 200
-};
-app.use(cors(corsOptions));
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  'https://your-website.com',
+  'http://localhost',
+  'https://localhost',
+  'capacitor://localhost'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Mobile apps and native HTTP clients may have no origin header
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
 
 // Request logger
 app.use((req, res, next) => {
