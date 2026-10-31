@@ -598,20 +598,30 @@ const uploadThumbnailToTelegram = async (thumbFilePath, title = '') => {
  */
 const streamThumbnailFromTelegram = async (messageId, res) => {
   try {
+    const fs = require('fs');
+    const path = require('path');
+    
+    // Check both public/thumbnails and uploads/thumbnails cache locations
+    const publicThumb = path.join(__dirname, '..', 'public', 'thumbnails', `thumb_${messageId}.jpg`);
+    const uploadsThumb = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumb_${messageId}.jpg`);
+
+    if (fs.existsSync(publicThumb)) {
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return fs.createReadStream(publicThumb).pipe(res);
+    }
+
+    if (fs.existsSync(uploadsThumb)) {
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return fs.createReadStream(uploadsThumb).pipe(res);
+    }
+
     const client = await getTelegramClient();
     const chatId = getTargetChatId();
 
-    const fs = require('fs');
-    const path = require('path');
-    const cacheDir = path.join(__dirname, '..', 'uploads', 'thumbnails');
+    const cacheDir = path.join(__dirname, '..', 'public', 'thumbnails');
     if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
-
-    const cacheFile = path.join(cacheDir, `thumb_${messageId}.jpg`);
-    if (fs.existsSync(cacheFile)) {
-      res.setHeader('Content-Type', 'image/jpeg');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      return fs.createReadStream(cacheFile).pipe(res);
-    }
 
     const msgs = await client.getMessages(chatId, { ids: [parseInt(messageId, 10)] });
     const msg = msgs && msgs[0];
@@ -621,7 +631,7 @@ const streamThumbnailFromTelegram = async (messageId, res) => {
 
     const buffer = await client.downloadMedia(msg.media);
     if (buffer) {
-      fs.writeFileSync(cacheFile, buffer);
+      fs.writeFileSync(publicThumb, buffer);
       res.setHeader('Content-Type', 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=86400');
       return res.end(buffer);

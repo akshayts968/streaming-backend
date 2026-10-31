@@ -33,6 +33,7 @@ app.use((req, res, next) => {
 
 // Set static folder for local uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Connect to Database
 const connectDB = async () => {
