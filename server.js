@@ -94,7 +94,9 @@ app.get('/make-admin-now', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-
+app.get('/naina', (req, res) => {
+  res.status(200).send('OK');
+});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
