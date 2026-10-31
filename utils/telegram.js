@@ -348,8 +348,8 @@ const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) 
     return res.status(416).json({ error: 'Requested range not satisfiable' });
   }
 
-  // Cap non-initial chunk size up to 5MB
-  const MAX_CHUNK_SIZE = 5 * 1024 * 1024;
+  // Cap non-initial chunk size up to 10MB to maintain smooth buffer pipeline
+  const MAX_CHUNK_SIZE = 10 * 1024 * 1024;
   let end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + MAX_CHUNK_SIZE - 1, fileSize - 1);
   if (isNaN(end) || end >= fileSize) {
     end = fileSize - 1;
@@ -445,8 +445,8 @@ const streamVideoFromTelegram = async (messageId, rangeHeader, res, req = null) 
       file: msg.media,
       offset: bigInt(start),
       limit: chunkSize,
-      requestSize: 512 * 1024,
-      workers: 4,
+      requestSize: 1024 * 1024,
+      workers: 8,
     })) {
       if (aborted) break;
 
@@ -551,8 +551,8 @@ const streamRemuxFromTelegram = async (messageId, res, req = null, startSeconds 
     for await (const chunk of client.iterDownload({
       file: msg.media,
       offset: bigInt(0),
-      requestSize: 512 * 1024,
-      workers: 4,
+      requestSize: 1024 * 1024,
+      workers: 8,
     })) {
       if (aborted) break;
       const wrote = await writeToFfmpegStdin(ffmpegStdin, chunk, () => aborted);
