@@ -23,9 +23,38 @@ const streamVideo = async (req, res) => {
         req.params.messageId = messageId;
         return streamTelegramVideo(req, res);
     }
+
+    // Check if fileId corresponds to a Video in DB with telegram or external videoUrl
+    try {
+        const Video = require('../models/Video');
+        const mongoose = require('mongoose');
+        const or = [{ slug: fileId }, { drive_file_id: fileId }];
+        if (mongoose.Types.ObjectId.isValid(fileId)) or.push({ _id: fileId });
+        const videoDoc = await Video.findOne({ $or: or });
+
+        if (videoDoc) {
+            if (videoDoc.telegram_message_id) {
+                req.params.messageId = String(videoDoc.telegram_message_id);
+                return streamTelegramVideo(req, res);
+            }
+            if (videoDoc.videoUrl && (videoDoc.videoUrl.startsWith('http://') || videoDoc.videoUrl.startsWith('https://'))) {
+                return res.redirect(videoDoc.videoUrl);
+            }
+        }
+    } catch (lookupErr) {
+        console.warn('Video lookup in streamVideo failed:', lookupErr.message);
+    }
+
     const range = req.headers.range;
 
     if (!range) return res.status(400).json({ error: "Requires Range header" });
+
+    // Check if Google Drive credentials are configured
+    if (!process.env.CLIENT_ID || !process.env.REFRESH_TOKEN) {
+        return res.status(404).json({
+            error: "Video source not found or Google Drive credentials not configured."
+        });
+    }
 
     try {
         const cacheKey = `video_size_${fileId}`;
