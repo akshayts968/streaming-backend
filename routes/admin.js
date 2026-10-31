@@ -84,7 +84,36 @@ const optionalAdminAuth = (req, res, next) => {
  */
 router.get('/featured', optionalAdminAuth, async (req, res) => {
   try {
-    const featured = await getFeaturedFromRedis();
+    let featured = await getFeaturedFromRedis();
+
+    // If Redis has no featured movies yet, automatically sync from DB videos
+    // so the admin dashboard reflects the exact 5 movies displayed on the homepage
+    if (!featured || featured.length === 0) {
+      const recentVideos = await Video.find({ isPublished: { $ne: false } })
+        .sort({ createdAt: -1 })
+        .limit(5);
+
+      if (recentVideos.length > 0) {
+        featured = recentVideos.map((v, idx) => ({
+          videoId: v.drive_file_id || (v.telegram_message_id ? String(v.telegram_message_id) : String(v._id)),
+          movieSlug: v.slug || String(v._id),
+          title: v.title,
+          bannerUrl: v.thumbnailUrl || '',
+          description: v.description || '',
+          ctaText: 'Watch Now',
+          ctaLink: '/watch/' + (v.slug || v._id),
+          order: idx + 1,
+          createdAt: v.createdAt ? v.createdAt.toISOString() : new Date().toISOString()
+        }));
+
+        try {
+          await saveFeaturedToRedis(featured);
+        } catch (saveErr) {
+          console.warn('Auto-sync featured to Redis failed:', saveErr.message);
+        }
+      }
+    }
+
     // Sort ascending by order
     featured.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     res.status(200).json({
